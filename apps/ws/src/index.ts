@@ -1,7 +1,5 @@
 import dotenv from "dotenv";
 dotenv.config();
-
-
 import client from "@repo/db/client";
 import { WebSocketMessage, WsDataType } from "@repo/common/types";
 import { WebSocketServer, WebSocket } from "ws";

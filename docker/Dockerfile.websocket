@@ -6,6 +6,7 @@ RUN npm install -g pnpm
 WORKDIR /usr/src/app
 
 # Set environment variables
+ARG JWT_SECRET
 ENV JWT_SECRET=${JWT_SECRET}
 
 # Copy necessary files for dependency installation
