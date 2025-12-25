@@ -165,8 +165,8 @@ jobs:
           platforms: linux/amd64
           tags: |
             ${{ steps.tags.outputs.tags }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=min
+          # cache-from: type=gha
+          # cache-to: type=gha,mode=min
           provenance: false
       
       - name: Clone staging-ops repo, update, and push
