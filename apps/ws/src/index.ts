@@ -11,6 +11,7 @@ if (!process.env.JWT_SECRET) {
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
+
 declare module "http" {
   interface IncomingMessage {
     user: {
