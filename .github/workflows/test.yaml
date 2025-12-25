@@ -177,9 +177,9 @@ jobs:
 
           # Decide environment
           if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
-            ENV="staging"
-          else
             ENV="prod"
+          else
+            ENV="staging"
           fi
 
           # Determine the deployment file
