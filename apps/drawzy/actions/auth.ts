@@ -11,10 +11,8 @@ export async function signUp(values: z.infer<typeof SignupSchema>) {
         return { error: "Invalid fields." };
     }
 
-
     const { name, email, password } = validatedFields.data;
 
-    
     const existingUser = await client.user.findFirst({
         where: {
             OR: [{ email }, { name }]

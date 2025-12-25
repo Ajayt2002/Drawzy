@@ -5,7 +5,6 @@ import { WebSocketMessage, WsDataType } from "@repo/common/types";
 import { WebSocketServer, WebSocket } from "ws";
 import jwt, { JwtPayload } from "jsonwebtoken";
 
-
 if (!process.env.JWT_SECRET) {
   throw new Error("JWT_SECRET is ABSOLUTELY REQUIRED and not set");
 }
