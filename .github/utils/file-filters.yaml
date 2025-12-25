@@ -1,0 +1,4 @@
+apps/drawzy:
+  - 'apps/drawzy/**'
+apps/ws:
+  - 'apps/ws/**'

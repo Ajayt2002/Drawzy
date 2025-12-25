@@ -1,0 +1,210 @@
+name: CICD
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - apps/**
+      - .github/workflows/**
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "Service to build"
+        required: true
+        type: choice
+        options:
+          - apps/drawzy
+          - apps/ws
+
+env:
+  DOCKER_REGISTRY: docker.io
+  IMAGE_NAMESPACE: ${{ vars.DOCKERHUB_USERNAME }}
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+
+  #Detect-Changes job will run only when changes are made to the codebase
+  Detect-Changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      services: ${{ steps.changes.outputs.services }}
+    steps:
+      - name: CheckOut Code
+        uses: actions/checkout@ff7abcd0c3c05ccf6adc123a8cd1fd4fb30fb493
+      - name: Path Changes Filter
+        uses: dorny/paths-filter@v3
+        id: filter  
+        with:
+          filters: .github/utils/file-filters.yaml
+      - name: Determine Service 
+        id: changes 
+        shell: bash
+        run: |
+          # Manual trigger
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            echo 'services=["${{ inputs.service }}"]' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          #Push / PR
+          echo 'services=${{ steps.filter.outputs.changes }}' >> "$GITHUB_OUTPUT"
+  
+  # scans code for vulnerabilities
+  CodeQL:
+    runs-on: ubuntu-22.04
+    needs: Detect-Changes
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ['javascript']
+    steps:
+      - name: CheckOut Code
+        uses: actions/checkout@ff7abcd0c3c05ccf6adc123a8cd1fd4fb30fb493
+        # Initializes the CodeQL tools for scanning.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v2
+        with:
+          queries: +security-extended
+          languages: ${{ matrix.language }}
+      # Automatically builds your project so CodeQL can understand your code structure
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v2
+      #runs the actual CodeQL queries against your code to detect security
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v2
+
+    
+  # Gitleaks is a SAST tool for detecting and preventing hardcoded secrets like passwords, API keys, and tokens in git repos
+  Secret-Scan:
+    runs-on: ubuntu-22.04
+    needs: CodeQL
+    steps:
+      - name: CheckOut Code
+        uses: actions/checkout@ff7abcd0c3c05ccf6adc123a8cd1fd4fb30fb493
+        with:
+          fetch-depth: 0
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  
+  # Dependency Scan & SBOM
+  Dependency-Scan:
+    runs-on:  ubuntu-22.04
+    needs: Secret-Scan
+    steps:
+      - name: CheckOut Code
+        uses: actions/checkout@ff7abcd0c3c05ccf6adc123a8cd1fd4fb30fb493
+      - name: Generate SBOM with Syft
+        uses: anchore/sbom-action@v0
+      - name: Run Trivy FS Scan
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: 0
+  
+  # Docker Build & Scan & Push & Deploy
+  Docker-Build-Scan-Push:
+    if: needs.Detect-Changes.outputs.services != '[]'
+    runs-on: self-hosted
+    timeout-minutes: 60
+    needs: 
+      - Dependency-Scan
+      - Detect-Changes
+    strategy:
+      matrix:
+        service: ${{ fromJson(needs.Detect-Changes.outputs.services) }}
+    steps:
+      - name: CheckOut Code
+        uses: actions/checkout@ff7abcd0c3c05ccf6adc123a8cd1fd4fb30fb493
+        with:
+          fetch-depth: 0
+      - name: Docker Login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Set up QEMU
+        uses: docker/setup-buildx-action@v3
+      - name: Select DockerFile
+        id: dockerfile 
+        run: |
+          if [[ "${{ matrix.service }}" == "apps/drawzy" ]];  then
+            echo "dockerfile=docker/Dockerfile.frontend" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ matrix.service }}" == "apps/ws" ]]; then
+            echo "dockerfile=docker/Dockerfile.websocket" >> "$GITHUB_OUTPUT"
+          else 
+            echo "dockerfile=docker/Dockerfile" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Image Tags
+        id: tags 
+        run: |
+          SERVICE_NAME=$(basename "${{ matrix.service }}")
+          SHORT_SHA="${GITHUB_SHA::8}"
+          IMAGE="${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${SERVICE_NAME}:${SHORT_SHA}"
+          echo "tags=$IMAGE" >> "$GITHUB_OUTPUT"
+      - name: Build and Push 
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ steps.dockerfile.outputs.dockerfile }}
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=min
+          provenance: false
+      
+      - name: Clone staging-ops repo, update, and push
+        env:
+          PAT: ${{ secrets.PAT }}
+        run: |
+          set -e 
+          git clone https://github.com/Ajayt2002/staging-ops.git
+          cd staging-ops
+
+          # Decide environment
+          if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
+            ENV="staging"
+          else
+            ENV="prod"
+          fi
+
+          # Determine the deployment file
+          if [[ "${{ matrix.service }}" == "apps/drawzy" ]]; then
+            DEPLOYMENT_FILE="$ENV/drawzy/drawzy-deployment.yaml"
+            IMAGE_NAME="drawzy"
+          elif [[ "${{ matrix.service }}" == "apps/ws" ]]; then
+            DEPLOYMENT_FILE="$ENV/drawzy/ws-deployment.yaml"
+            IMAGE_NAME="ws"
+          else
+            echo "Unknown service"
+            exit 1
+          fi
+          DIGEST="${{ steps.build.outputs.digest }}"
+
+          echo "Updating $DEPLOYMENT_FILE → ajayt8374/${IMAGE_NAME}@${DIGEST}"
+
+          # sed -i -E "s|^([[:space:]]*image:).*|\1 ajayt8374/${IMAGE_NAME}@${DIGEST}|" "$DEPLOYMENT_FILE"
+          sed -i -E "s|(image:[[:space:]]*ajayt8374/${IMAGE_NAME}@sha256:)[a-f0-9]+|\1${DIGEST#sha256:}|" "$DEPLOYMENT_FILE"
+
+
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add .
+          git commit -m "ci(gitops): update ${IMAGE_NAME}@${DIGEST}" || echo "No changes"
+
+          git push https://${PAT}@github.com/Ajayt2002/staging-ops.git main

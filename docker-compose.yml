@@ -1,0 +1,59 @@
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile.frontend
+      args:
+        NEXTAUTH_SECRET: "Dr@W~%F>0Ke&"
+        JWT_SECRET: "Dr@W~%F>0Ke&"
+        DATABASE_URL: "postgresql://postgres:mysecretpassword@database:5432/drawzy"
+    ports:
+      - "3000:3000"
+    environment:
+      NEXTAUTH_SECRET: "Dr@W~%F>0Ke&"
+      NEXTAUTH_URL: "http://localhost:3000"
+      DATABASE_URL: "postgresql://postgres:mysecretpassword@database:5432/drawzy"
+      NEXT_PUBLIC_BASE_URL: "http://localhost:3000"
+      NEXT_PUBLIC_WS_URL: "ws://localhost:8080"
+      JWT_SECRET: "Dr@W~%F>0Ke&"
+    depends_on:
+      - migrate
+      - websocket
+      - database
+
+  websocket:
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile.websocket
+    ports:
+      - "8080:8080"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: "postgresql://postgres:mysecretpassword@database:5432/drawzy"
+    depends_on:
+      - database
+
+  database:
+    image: postgres:13-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: drawzy
+      POSTGRES_PASSWORD: mysecretpassword
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  migrate:
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile.frontend
+    command: ["sh", "-c", "cd packages/db && npx prisma migrate deploy"]
+    environment:
+      DATABASE_URL: "postgresql://postgres:mysecretpassword@database:5432/drawzy"
+    depends_on:
+      - database
+    restart: "no"
+
+volumes:
+  postgres-data:
